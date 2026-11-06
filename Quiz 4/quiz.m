@@ -1,0 +1,593 @@
+ %se leen los datos de las dos hojas
+datos_barras = readmatrix("Tablas.xlsx", "Sheet","Barras","Range","A2:F6");
+datos_lineas = readmatrix("Tablas.xlsx", "Sheet","Lineas","Range","A2:E7");
+
+%se plantea la matriz ybus
+m_X = datos_lineas (:,4);
+m_R = datos_lineas (:,3);
+m_b = datos_lineas (:,5);
+num_lineas = datos_lineas(:,1:2); 
+
+
+%se plantea la matriz de admitancias
+m_X = m_X .* 1j;
+
+m_ys = 1./(m_R+m_X);
+
+m_yp = (1j.*m_b)./2;
+
+%se plantea la matriz de ceros
+
+max_barras = max(datos_barras(:,1));
+
+Ybus = zeros(max_barras);
+
+%mediante ciclos y la formula se plantea la diagonal
+
+%ciclo con contador k, que inicia en 1, va recorriendo el numero de barras,
+%ya que estos numeros son los subindices de i y j
+for k = 1:size(num_lineas,1)
+
+    i = num_lineas(k,1);
+    j = num_lineas(k,2);
+    y = m_ys(k);
+
+    %se aplica la formula de la presentación:
+
+    %Para la diagonal
+
+    Ybus(i,i) = Ybus(i,i) + y + m_yp(k);
+
+    Ybus(j,j) = Ybus(j,j) + y + m_yp(k);
+
+    %Para el resto de valores en la matriz
+
+
+    Ybus(i,j) = Ybus(i,j) - y;
+
+    Ybus(j,i) = Ybus(j,i) - y;
+
+end
+
+
+% Se calcula la matriz de impedancias
+Zbus = inv(Ybus);
+
+% Se obtiene la parte real de Zbus
+Rbus = real(Zbus);
+
+% Se obtiene la parte imaginaria de Zbus
+Xbus = imag(Zbus);
+
+% Se muestran los resultados
+
+disp("Se tiene la siguiente matriz para Ybus: ")
+Ybus
+
+disp("Matriz de impedancias Zbus:")
+disp(Zbus)
+
+disp("Matriz Rbus:")
+disp(Rbus)
+
+disp("Matriz Xbus:")
+disp(Xbus)
+
+
+disp("Se aplica el método de Newton-Rhapson")
+
+%% 
+%se debe de identificar el tipo de barras:
+
+%tipos de barras 1 = PQ (carga) | 2 = PV (gene) | 3 = oscilante
+
+%identificación de tipos de barras
+tipo_barra = datos_barras(:,2);
+
+
+%Guardar indices
+
+idx_PQ = find(tipo_barra == 1);
+idx_PV = find(tipo_barra == 2);
+idx_slack = find(tipo_barra == 3);
+
+%Datos de excel para el voltaje y angulo
+V = datos_barras(:,4);
+
+% Inicializar todos los angulos en cero
+n = size(datos_barras,1);
+ang = zeros(n,1);
+
+
+%inicio
+start = input("1 = usa flat start o 2 = Manual ");
+
+switch start
+
+    case 1 %Flat Start
+
+        V(idx_PQ) = 1;
+        ang(idx_PQ) = 0;
+        ang(idx_PV) = 0;
+
+    case 2 %con inputs
+
+
+        for d = 1:size(datos_barras,1)
+        
+            numero_barra = datos_barras(d,1);
+        
+            disp("ya se determinaron las barras correctamente, con que valores quiere empezar a iterar? ");
+        
+            
+            if tipo_barra(d) == 1 
+            
+                disp("Se identifico una barra tipo 1 de carga ");
+            
+                V(d) = input("ingrese un valor de inicio de iteración para el voltaje: ");
+            
+                ang(d) = deg2rad(input("ingrese un valor de inicio de iteración para el angulo: "));
+        
+            
+            elseif tipo_barra(d) == 2 
+            
+                disp("Se identifico una barra tipo 2 de generación");
+            
+                ang(d) = deg2rad(input("ingrese un valor de inicio de iteración para el angulo de la barra de carga 2: "));
+           
+        
+        
+            elseif tipo_barra(d) ==3
+        
+                disp("Se tiene que la barra es oscilante")
+            end
+        end
+
+    otherwise
+
+        error("Naaa ta mal");
+end
+%% 
+%% 
+%condiciones de convergencia
+tol = input("Inserte el valor de tolerancia para Newton Rhapson: ");
+max_iter = 30;
+
+%Planteamiento para Newton-Rhapson
+
+%Valores iniciales
+
+V_inicia = V;
+ang_inicial = ang;
+
+
+%Se identifican las barras con los angulos desconocidos PQ y PV:
+
+idx_ang = [idx_PV; idx_PQ];
+
+%cantidad de barra en total
+
+n = size(datos_barras,1);
+
+%Separando componentes de la matriz de admitancias Ybus:
+
+G = real(Ybus);
+B = imag(Ybus);
+
+% Potencias especificadas directamente en pu en el excel
+
+PG = datos_barras(:,3);
+PD = datos_barras(:,5);
+QD = datos_barras(:,6);
+
+Pesp = PG - PD;
+
+
+Qesp = -QD;
+
+%% 
+%Newton-Rhapson
+
+converge = false;
+
+for iter = 1:max_iter
+
+    %se calcula los valores de voltaje complejo y potencia de las barras:
+
+    Vcal = V .* exp(1j*ang);
+
+    Scal = Vcal .* conj(Ybus*Vcal);
+
+    Pcal = real(Scal);
+    Qcal = imag(Scal);
+    
+    delta_P = Pesp(idx_ang) - Pcal(idx_ang);
+    delta_Q = Qesp(idx_PQ) - Qcal(idx_PQ);
+    
+    %Se determina el valor del error
+    error_pot = [delta_P;delta_Q];
+    %Se comprueba la convergencia
+    error_max = max(abs(error_pot));
+    if error_max < tol
+
+        converge = true;
+        break
+    end
+
+    %calculo del jacobiano
+
+    H = zeros(n);
+    N = zeros(n);
+    M = zeros(n);
+    L = zeros(n);
+    
+    for i = 1:n
+        for j = 1:n
+
+            diferencia = ang(i) - ang(j);
+
+            if i == j
+
+                %se hacen las derivadas de las diagonales
+
+                H(i,i) = -Qcal(i)-B(i,i)*V(i)^2;
+
+                N(i,i) = Pcal(i)/V(i)+G(i,i)*V(i);
+
+                M(i,i) = Pcal(i)-G(i,i)*V(i)^2;
+
+                L(i,i) = Qcal(i)/V(i)-B(i,i)*V(i);
+            else
+
+                %derivadas que no son la diagonal
+
+                H(i,j) = V(i)*V(j)*(G(i,j)*sin(diferencia) - B(i,j)*cos(diferencia));
+                N(i,j) = V(i)*(G(i,j)*cos(diferencia) + B(i,j)*sin(diferencia));
+                M(i,j) = -V(i)*V(j)*(G(i,j)*cos(diferencia) + B(i,j)*sin(diferencia));
+                L(i,j) = V(i)*(G(i,j)*sin(diferencia) - B(i,j)*cos(diferencia));
+            end
+        end
+    end
+
+    %se forma el jacobiano
+
+    J = [H(idx_ang,idx_ang), N(idx_ang,idx_PQ);
+        M(idx_PQ,idx_ang), L(idx_PQ,idx_PQ)];
+
+    %resolver sistema lineal
+
+    correccion = J \ error_pot;
+
+    %Actualizar angulos
+    n_ang = length(idx_ang);
+
+    ang(idx_ang) = ang(idx_ang) + correccion(1:n_ang);
+
+    % Actualizar magnitudes de voltaje
+    V(idx_PQ) = V(idx_PQ) + correccion(n_ang+1:end);
+
+end
+%% 
+
+% Recalcular las potencias con los ultimos voltajes
+Vc = V .* exp(1j*ang);
+Scal = Vc .* conj(Ybus*Vc);
+
+Pcal = real(Scal);
+Qcal = imag(Scal);
+
+error_pot = [
+    Pesp(idx_ang) - Pcal(idx_ang);
+    Qesp(idx_PQ) - Qcal(idx_PQ)
+    ];
+
+error_max = max(abs(error_pot));
+
+converge = error_max < tol;
+
+if converge
+    disp("Newton-Raphson convergio correctamente");
+
+    % Datos de las barras
+    barra = datos_barras(:,1);
+    tipo = datos_barras(:,2);
+
+    % Resultados obtenidos
+    V_pu = V;
+    Angulo = rad2deg(ang);
+    
+    P_neta = Pcal;
+    Q_neta = Qcal;
+    
+    % Crear tabla completa
+    tabla_resultados = table(barra, tipo, V_pu, Angulo, P_neta, Q_neta);
+
+    tabla_resultados.Properties.VariableNames = ...
+        {'Barras','Tipo','V(pu)','Angulo(°)','P neta(pu)','Qneta(pu)'};
+
+    disp("Resultados finales de Newton-Raphson:")
+    disp(tabla_resultados)
+
+    % Guardar en Excel
+    writetable(tabla_resultados, 'Tablas.xlsx', 'Sheet', 'Resultados');
+
+
+%% 
+
+
+    cont = input("Desea continuar con el cálculo de las corrientes inyectadas en cada barra 1 = sis, 2 = non ")
+    
+    if cont == 1
+
+        % Corrientes inyectadas en cada barra
+        Iiny = (P_neta - 1j*Q_neta) ./ conj(Vc);
+
+        % Mostrar corrientes
+        tabla_corrientes = table(barra, Iiny);
+
+        disp("Corrientes de inyeccion (inciso b):")
+        disp(tabla_corrientes)
+        
+%%
+        %calculos de ID 
+        disp("Se procede con el calculo de la corriente total de carga ID")
+        ID = sum(Iiny(idx_PQ));
+
+    
+        disp("Se obtuvo que ID es: ")
+        disp(ID)
+        
+%%
+        %calculos d3,d4,d5
+
+        disp("Se va a calcular d3,d4,d5: ")
+        I_cargas = Iiny(idx_PQ);
+        d = I_cargas ./ ID;
+        d3 = d(1);
+        d4 = d(2);
+        d5 = d(3);
+        
+        vect_des = [d3;d4;d5];
+    
+        disp("Se obtuvieron los valores:")
+    
+        disp(vect_des)
+        %%
+        %compribación de que suman 1
+        disp("Comproción que suman 1")
+
+        suma_d = d3 + d4 + d5;
+
+        error_d = abs(suma_d - 1);
+        
+        disp("Suma de los factores de distribucion:")
+        disp(suma_d)
+
+        %La corriente sin carga es
+        disp("Calculo de la corriente sin carga")
+
+        In0 = -Vc(1)/Zbus(1,1);
+
+        disp(In0);
+    else
+
+        disp("No se calcularan las corrientes :c");
+
+    end
+
+    cont_2 = input("Desea continuar con el cálculo del inciso b 1 = sis, 2 = non ")
+
+    if cont_2 == 1
+
+        %Calculo de T,t1,t2
+
+        T = Zbus(1,idx_PQ) * vect_des;
+        %% Calculo de t1 y t2
+
+        t1 = Zbus(1,1)/T;
+        t2 = Zbus(1,2)/T;
+        
+        disp("Valor obtenido de T:")
+        disp(T)
+
+        disp("Valor obtenido de t1:")
+        disp(t1)
+
+        disp("Valor obtenido de t2:")
+        disp(t2)
+
+        disp("Se procede con el calculo de la matriz C")
+
+        C = [1, 0, 0;
+            0, 1, 0;
+            -d3*t1, -d3*t2, -d3*t1;
+            -d4*t1, -d4*t2, -d4*t1;
+            -d5*t1, -d5*t2, -d5*t1];
+
+        disp("La matriz C obtenida es:")
+        disp(C)
+
+        disp("Se procede con la verificacion de la matriz C")
+
+        % Vector de corrientes transformadas
+        I_transformadas = [Iiny(1);
+            Iiny(2);
+            In0];
+
+        % Multiplicacion de la matriz C por las corrientes
+        I_comprobacion = C * I_transformadas;
+
+        disp("Corrientes obtenidas mediante la matriz C:")
+        disp(I_comprobacion)
+
+        % Comparacion de las corrientes de carga
+        error_I = abs(Iiny(idx_PQ) - I_comprobacion(idx_PQ));
+
+        % Tabla para comprobar los resultados
+        tabla_verificacion = table(barra(idx_PQ), ...
+            Iiny(idx_PQ), I_comprobacion(idx_PQ), error_I, ...
+            'VariableNames', ...
+            {'Barra','I_Original','I_Transformada','Error'});
+        
+        disp("Verificacion de las corrientes I3, I4 e I5:")
+        disp(tabla_verificacion)
+
+        % Error maximo de comprobacion
+        error_max_C = max(error_I);
+    else
+
+        disp("No se continua con el inciso b :c");
+
+    end
+%%
+    cont_c = input("Desea continuar con el cálculo del inciso c 1 = sis, 2 = non ")
+
+    if cont_c ==1
+
+        %calculo de la matriz CTRbarraC*
+        
+        disp("Calculo de C transpuesta por Rbus por C conjugada")
+
+        format long
+
+        M = C.' * Rbus * conj(C);
+        
+        disp("Matriz M:")
+        disp(M)
+
+
+        disp("Calculo de los factores alfa")
+
+        % Factor alfa del generador 1
+        alfa1 = (1 - 1j*(Qcal(1)/Pcal(1))) / conj(Vc(1));
+
+        % Factor alfa del generador 2
+        alfa2 = (1 - 1j*(Qcal(2)/Pcal(2))) / conj(Vc(2));
+
+        disp("Alfa 1:")
+        disp(alfa1)
+
+        disp("Alfa 2:")
+        disp(alfa2)
+
+        % Matriz diagonal de transformacion
+
+        A = diag([alfa1, alfa2, In0]);
+
+        % Calculo de la matriz T alfa
+        disp("Calculo de la matriz T alfa")
+
+        T_alfa = A * M * conj(A);
+
+        disp("Matriz T alfa:")
+        disp(T_alfa)
+        
+        disp("Extraccion de los coeficientes B")
+
+        % Parte real de la matriz T alfa
+        H_alfa = real(T_alfa);
+
+        % Matriz B de 2x2
+        Bcoef = H_alfa(1:2,1:2);
+
+        % Vector B0 de 2x1
+        B0 = 2*H_alfa(1:2,3);
+
+        % Termino independiente B00
+        B00 = H_alfa(3,3);
+
+        disp("Matriz B:")
+        disp(Bcoef)
+
+        disp("Vector B0:")
+        disp(B0)
+
+        disp("Termino B00:")
+        disp(B00)
+    else
+        disp("No se continua con el inciso c aaaaaaa");
+
+
+    end
+    
+
+    cont_d = input("Desea continuar con el cálculo del inciso d 1 = sis, 2 = non ")
+
+    if cont_d ==1
+
+        disp("Se procede con el calculo de las perdidas")
+
+        % Potencia base del sistema
+        baseMVA = 100;
+
+        % Identificar las barras de generacion
+        idx_gen = [idx_slack; idx_PV];
+
+        % Potencias activas generadas en cada barra
+        PG_calculada = zeros(n,1);
+
+        PG_calculada(idx_gen) = Pcal(idx_gen) + PD(idx_gen);
+
+        % Vector de potencias de los generadores
+        Pg = PG_calculada(idx_gen);
+
+        % Aplicar la formula de perdidas
+        PL_B = Pg.' * Bcoef * Pg + Pg.' * B0 + B00;
+
+        
+        
+        % Convertir las perdidas a MW
+        PL_B_MW = PL_B * baseMVA;
+
+        disp("Perdidas mediante coeficientes B:")
+        disp(PL_B);
+
+        disp("Perdidas mediante coeficientes B en MW:")
+
+        disp(PL_B_MW);
+
+        disp("Se calculan las perdidas del flujo de potencia")
+
+        % Suma de las potencias generadas
+        suma_PG = sum(PG_calculada);
+
+        % Suma de las potencias demandadas
+        suma_PD = sum(PD);
+
+        % Balance de potencia
+        PL_flujo = suma_PG - suma_PD;
+
+        % Conversion a MW
+        PL_flujo_MW = PL_flujo * baseMVA;
+
+       disp("Se tiene que FL, flujo es:")
+
+       disp(PL_flujo)
+       
+       disp("Se tiene que FL, flujo en MW es:")
+
+       disp(PL_flujo_MW)
+
+       % Diferencia absoluta
+       error_PL = abs(PL_B - PL_flujo);
+
+       % Diferencia porcentual respecto al flujo
+       error_porcentual = (error_PL / abs(PL_flujo)) * 100;
+
+       disp("Diferencia entre pérdidas calculadas:")
+       disp(error_PL)
+
+       disp("Error porcentual entre ambos métodos:")
+       disp(error_porcentual)
+
+    else
+        disp("No se continua con el inciso d, que mal :c");
+    end
+
+
+  
+else
+
+    warning("No se alcanzo la tolerancia establecida");
+
+end
